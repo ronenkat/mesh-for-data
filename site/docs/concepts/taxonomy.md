@@ -36,6 +36,7 @@ Modules are the active components that interacts with the workload and apply the
 Fybrik communicates with a policy manager, sending requests for policy decisions for accessing data assets, and received requests that contains the policy decisions (actions) that should be enforced.
 
 The information required to be in the requests and responses is details as follows:
+
 Policy manager request | [policy_manager_request.json](https://github.com/fybrik/fybrik/blob/master/config/taxonomy/objects/policy_manager_request.json)
 Policy manager response | [policy_manager_response.json](https://github.com/fybrik/fybrik/blob/master/config/taxonomy/objects/policy_manager_response.json)
 
@@ -44,7 +45,7 @@ Policy manager response | [policy_manager_response.json](https://github.com/fybr
 The policy decision is documented in the [response json](https://github.com/fybrik/fybrik/blob/master/config/taxonomy/objects/policy_manager_response.json).
 Concretely it include the action that should be enforced. The default taxonomy does not include any action.
 > For reference we have include [sample actions](https://github.com/fybrik/fybrik/blob/master/config/taxonomy/example/module/actions.yaml)
-> 
+
 ### Data catalog
 
 TBD
