@@ -10,29 +10,31 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mesh-for-data/mesh-for-data/manager/controllers/utils"
+	"fybrik.io/fybrik/manager/controllers/utils"
 	"helm.sh/helm/v3/pkg/release"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/fields"
 
-	comv1alpha1 "github.com/datashim-io/datashim/src/dataset-operator/pkg/apis/com/v1alpha1"
-	appapi "github.com/mesh-for-data/mesh-for-data/manager/apis/app/v1alpha1"
+	appapi "fybrik.io/fybrik/manager/apis/app/v1alpha1"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gexec"
+	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/envtest/printer"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	"github.com/mesh-for-data/mesh-for-data/pkg/helm"
-	local "github.com/mesh-for-data/mesh-for-data/pkg/multicluster/local"
+	"fybrik.io/fybrik/pkg/helm"
+	local "fybrik.io/fybrik/pkg/multicluster/local"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -58,7 +60,7 @@ var _ = BeforeSuite(func(done Done) {
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths: []string{
-			filepath.Join("..", "..", "..", "charts", "m4d-crd", "templates"),
+			filepath.Join("..", "..", "..", "charts", "fybrik-crd", "templates"),
 		},
 		ErrorIfCRDPathMissing: true,
 	}
@@ -72,8 +74,6 @@ var _ = BeforeSuite(func(done Done) {
 
 	err = appapi.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
-	err = comv1alpha1.SchemeBuilder.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:scheme
 
@@ -82,14 +82,22 @@ var _ = BeforeSuite(func(done Done) {
 		k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 		Expect(err).ToNot(HaveOccurred())
 	} else {
+		systemNamespaceSelector := fields.SelectorFromSet(fields.Set{"metadata.namespace": utils.GetSystemNamespace()})
+		workerNamespaceSelector := fields.SelectorFromSet(fields.Set{"metadata.namespace": BlueprintNamespace})
+		// the testing environment will restrict access to secrets, modules and storage accounts
 		mgr, err = ctrl.NewManager(cfg, ctrl.Options{
 			Scheme:             scheme.Scheme,
 			MetricsBindAddress: "localhost:8086",
+			NewCache: cache.BuilderWithOptions(cache.Options{SelectorsByObject: cache.SelectorsByObject{
+				&appapi.FybrikModule{}:         {Field: systemNamespaceSelector},
+				&appapi.FybrikStorageAccount{}: {Field: systemNamespaceSelector},
+				&corev1.Secret{}:               {Field: workerNamespaceSelector},
+			}}),
 		})
 		Expect(err).ToNot(HaveOccurred())
 
 		// Setup application controller
-		reconciler := createTestM4DApplicationController(mgr.GetClient(), mgr.GetScheme())
+		reconciler := createTestFybrikApplicationController(mgr.GetClient(), mgr.GetScheme())
 		err = reconciler.SetupWithManager(mgr)
 		Expect(err).ToNot(HaveOccurred())
 
@@ -104,7 +112,7 @@ var _ = BeforeSuite(func(done Done) {
 		Expect(err).ToNot(HaveOccurred())
 
 		// Setup plotter controller
-		clusterMgr, err := local.NewManager(mgr.GetClient(), "m4d-system")
+		clusterMgr, err := local.NewManager(mgr.GetClient(), "fybrik-system")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(clusterMgr).NotTo(BeNil())
 		err = NewPlotterReconciler(mgr, "Plotter", clusterMgr).SetupWithManager(mgr)
@@ -118,18 +126,18 @@ var _ = BeforeSuite(func(done Done) {
 		k8sClient = mgr.GetClient()
 		Expect(k8sClient.Create(context.Background(), &v1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: "m4d-system",
+				Name: utils.GetSystemNamespace(),
 			},
 		}))
 		Expect(k8sClient.Create(context.Background(), &v1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: "m4d-blueprints",
+				Name: BlueprintNamespace,
 			},
 		}))
 		Expect(k8sClient.Create(context.Background(), &v1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "cluster-metadata",
-				Namespace: "m4d-system",
+				Namespace: "fybrik-system",
 			},
 			Data: map[string]string{
 				"ClusterName":   "thegreendragon",

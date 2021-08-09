@@ -1,3 +1,6 @@
+// Copyright 2021 IBM Corp.
+// SPDX-License-Identifier: Apache-2.0
+
 package serde_test
 
 import (
@@ -6,7 +9,7 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"github.com/mesh-for-data/mesh-for-data/pkg/serde"
+	"fybrik.io/fybrik/pkg/serde"
 )
 
 type ExampleArbitrary struct {

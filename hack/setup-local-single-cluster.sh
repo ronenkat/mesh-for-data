@@ -3,18 +3,15 @@
 # This script is meant for local development with kind
 
 export DOCKER_HOSTNAME=localhost:5000
-export DOCKER_NAMESPACE=m4d-system
+export DOCKER_NAMESPACE=fybrik-system
 export HELM_EXPERIMENTAL_OCI=1
-export VALUES_FILE=m4d/integration-tests.values.yaml
+export VALUES_FILE=charts/fybrik/integration-tests.values.yaml
 
 make kind
 kubectl config use-context kind-control
-make -C charts vault
-make -C charts cert-manager
-make -C third_party/datashim deploy
+make cluster-prepare
 make docker-minimal-it
 make cluster-prepare-wait
+make deploy
 make configure-vault
-make -C charts m4d
-make -C manager wait_for_manager
 make -C modules helm-chart-push

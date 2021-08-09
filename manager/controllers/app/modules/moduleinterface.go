@@ -6,12 +6,12 @@ package modules
 import (
 	"errors"
 
-	"github.com/mesh-for-data/mesh-for-data/pkg/serde"
+	"fybrik.io/fybrik/pkg/serde"
 
-	app "github.com/mesh-for-data/mesh-for-data/manager/apis/app/v1alpha1"
-	"github.com/mesh-for-data/mesh-for-data/manager/controllers/utils"
-	pb "github.com/mesh-for-data/mesh-for-data/pkg/connectors/protobuf"
-	"github.com/mesh-for-data/mesh-for-data/pkg/multicluster"
+	app "fybrik.io/fybrik/manager/apis/app/v1alpha1"
+	"fybrik.io/fybrik/manager/controllers/utils"
+	pb "fybrik.io/fybrik/pkg/connectors/protobuf"
+	"fybrik.io/fybrik/pkg/multicluster"
 )
 
 // DataDetails is the information received from the catalog connector
@@ -28,19 +28,19 @@ type DataDetails struct {
 	Metadata *pb.DatasetMetadata
 }
 
-// DataInfo defines all the information about the given data set that comes from the m4dapplication spec and from the connectors.
+// DataInfo defines all the information about the given data set that comes from the fybrikapplication spec and from the connectors.
 type DataInfo struct {
 	// Source connection details
 	DataDetails *DataDetails
 	// The path to Vault secret which holds the dataset credentials
 	VaultSecretPath string
-	// Pointer to the relevant data context in the M4D application spec
+	// Pointer to the relevant data context in the Fybrik application spec
 	Context *app.DataContext
 }
 
 // ModuleInstanceSpec consists of the module spec and arguments
 type ModuleInstanceSpec struct {
-	Module      *app.M4DModule
+	Module      *app.FybrikModule
 	Args        *app.ModuleArguments
 	AssetID     string
 	ClusterName string
@@ -48,10 +48,10 @@ type ModuleInstanceSpec struct {
 
 // Selector is responsible for finding an appropriate module
 type Selector struct {
-	Module       *app.M4DModule
-	Dependencies []*app.M4DModule
+	Module       *app.FybrikModule
+	Dependencies []*app.FybrikModule
 	Message      string
-	Flow         app.ModuleFlow
+	Capability   app.CapabilityType
 	Source       *app.InterfaceDetails
 	Destination  *app.InterfaceDetails
 	// Actions that the module will perform
@@ -61,14 +61,16 @@ type Selector struct {
 }
 
 // TODO: Add function to check if module supports recurrence type
+// TODO: In the future add support for plugins
+// TODO: Add support for scope
 
 // GetModule returns the selected module
-func (m *Selector) GetModule() *app.M4DModule {
+func (m *Selector) GetModule() *app.FybrikModule {
 	return m.Module
 }
 
 // GetDependencies returns dependencies of a selected module
-func (m *Selector) GetDependencies() []*app.M4DModule {
+func (m *Selector) GetDependencies() []*app.FybrikModule {
 	return m.Dependencies
 }
 
@@ -98,39 +100,37 @@ func (m *Selector) AddModuleInstances(args *app.ModuleArguments, item DataInfo, 
 	return instances
 }
 
-// SupportsGovernanceActions checks whether the module supports the required agovernance actions
-func (m *Selector) SupportsGovernanceActions(module *app.M4DModule, actions []*pb.EnforcementAction) bool {
-	// Check that the governance actions match
+// SupportsGovernanceActions checks whether the module supports the required agovernance actions for the capability requested
+func (m *Selector) SupportsGovernanceActions(module *app.FybrikModule, actions []*pb.EnforcementAction) bool {
+	// Loop over the actions requested for the declared capability
 	for _, action := range actions {
-		supportsAction := false
-		for j := range module.Spec.Capabilities.Actions {
-			transformation := &module.Spec.Capabilities.Actions[j]
-			if transformation.ID == action.Id && transformation.Level == action.Level {
-				supportsAction = true
-				break
-			}
-		}
-		if !supportsAction {
+		// If any one of the actions is not supported, return false
+		if !m.SupportsGovernanceAction(module, action) {
 			return false
 		}
 	}
-	return true
+	return true // All actions supported
 }
 
-// SupportsGovernanceAction checks whether the module supports the required agovernance action
-func (m *Selector) SupportsGovernanceAction(module *app.M4DModule, action *pb.EnforcementAction) bool {
-	// Check that the governance actions match
-	for j := range module.Spec.Capabilities.Actions {
-		transformation := &module.Spec.Capabilities.Actions[j]
-		if transformation.ID == action.Id && transformation.Level == action.Level {
-			return true
+// SupportsGovernanceAction checks whether the module supports the required governance action
+func (m *Selector) SupportsGovernanceAction(module *app.FybrikModule, action *pb.EnforcementAction) bool {
+	// Check if the module supports the capability
+	if hasCapability, caps := utils.GetModuleCapabilities(module, m.Capability); hasCapability {
+		// There could be multiple structures for the same CapabilityType
+		for _, cap := range caps {
+			// Loop over the data transforms (actions) performed by the module for this capability
+			for _, act := range cap.Actions {
+				if act.ID == action.Id && act.Level == action.Level {
+					return true
+				}
+			}
 		}
 	}
-	return false
+	return false // Action not supported by module
 }
 
 // SupportsDependencies checks whether the module supports the dependency requirements
-func (m *Selector) SupportsDependencies(module *app.M4DModule, moduleMap map[string]*app.M4DModule) bool {
+func (m *Selector) SupportsDependencies(module *app.FybrikModule, moduleMap map[string]*app.FybrikModule) bool {
 	// check dependencies
 	subModuleNames, errNames := CheckDependencies(module, moduleMap)
 	if len(errNames) > 0 {
@@ -149,35 +149,39 @@ func (m *Selector) SupportsDependencies(module *app.M4DModule, moduleMap map[str
 }
 
 // SupportsInterface indicates whether the module supports interface requirements and dependencies
-func (m *Selector) SupportsInterface(module *app.M4DModule) bool {
-	// Check if the module supports the flow
-	if !utils.SupportsFlow(module.Spec.Flows, m.Flow) {
-		return false
-	}
-	// Check if the source and sink protocols requested are supported
+func (m *Selector) SupportsInterface(module *app.FybrikModule) bool {
 	supportsInterface := false
-	if m.Flow == app.Read {
-		supportsInterface = module.Spec.Capabilities.API.DataFormat == m.Destination.DataFormat && module.Spec.Capabilities.API.Protocol == m.Destination.Protocol
-	} else if m.Flow == app.Copy {
-		for _, inter := range module.Spec.Capabilities.SupportedInterfaces {
-			if inter.Flow != m.Flow {
-				continue
+
+	// Check if the module supports the capability
+	if hasCapability, caps := utils.GetModuleCapabilities(module, m.Capability); hasCapability {
+		// There could be multiple structures for the same CapabilityType
+		for _, cap := range caps {
+			// Check if the source and sink protocols requested are supported
+
+			if m.Capability == app.Read {
+				supportsInterface = cap.API.DataFormat == m.Destination.DataFormat && cap.API.Protocol == m.Destination.Protocol
+				if supportsInterface {
+					return true
+				}
+			} else if m.Capability == app.Copy {
+				for _, inter := range cap.SupportedInterfaces {
+					if inter.Source.DataFormat != m.Source.DataFormat || inter.Source.Protocol != m.Source.Protocol {
+						continue
+					}
+					if inter.Sink.DataFormat != m.Destination.DataFormat || inter.Sink.Protocol != m.Destination.Protocol {
+						continue
+					}
+					supportsInterface = true
+					break
+				}
 			}
-			if inter.Source.DataFormat != m.Source.DataFormat || inter.Source.Protocol != m.Source.Protocol {
-				continue
-			}
-			if inter.Sink.DataFormat != m.Destination.DataFormat || inter.Sink.Protocol != m.Destination.Protocol {
-				continue
-			}
-			supportsInterface = true
-			break
 		}
 	}
 	return supportsInterface
 }
 
 // SelectModule finds the module that fits the requirements
-func (m *Selector) SelectModule(moduleMap map[string]*app.M4DModule) bool {
+func (m *Selector) SelectModule(moduleMap map[string]*app.FybrikModule) bool {
 	m.Message = ""
 	for _, module := range moduleMap {
 		if !m.SupportsInterface(module) {
@@ -191,12 +195,12 @@ func (m *Selector) SelectModule(moduleMap map[string]*app.M4DModule) bool {
 		}
 		return true
 	}
-	m.Message += string(m.Flow) + " : " + app.ModuleNotFound
+	m.Message += string(m.Capability) + " : " + app.ModuleNotFound
 	return false
 }
 
 // CheckDependencies returns dependent module names
-func CheckDependencies(module *app.M4DModule, moduleMap map[string]*app.M4DModule) ([]string, []string) {
+func CheckDependencies(module *app.FybrikModule, moduleMap map[string]*app.FybrikModule) ([]string, []string) {
 	var found []string
 	var missing []string
 
@@ -223,9 +227,9 @@ func CheckDependencies(module *app.M4DModule, moduleMap map[string]*app.M4DModul
 // Write is done at target
 func (m *Selector) SelectCluster(item DataInfo, clusters []multicluster.Cluster) (string, error) {
 	geo := item.DataDetails.Geography
-	if m.Flow == app.Read {
+	if m.Capability == app.Read {
 		geo = m.Geo
-	} else if m.Flow == app.Copy && len(m.Actions) == 0 {
+	} else if m.Capability == app.Copy && len(m.Actions) == 0 {
 		geo = m.Geo
 	}
 	for _, cluster := range clusters {

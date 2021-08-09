@@ -1,5 +1,5 @@
-apiVersion: app.m4d.ibm.com/v1alpha1
-kind: M4DApplication
+apiVersion: app.fybrik.io/v1alpha1
+kind: FybrikApplication
 metadata:
   name: read-test
   namespace: default
@@ -11,8 +11,8 @@ spec:
   appInfo:
     intent: Testing
   data:
-    - dataSetID: '{"asset_id": "redact-dataset", "catalog_id": "s3"}'
+    - dataSetID: s3/redact-dataset
       requirements:
         interface: 
-          protocol: m4d-arrow-flight
+          protocol: fybrik-arrow-flight
           dataformat: arrow

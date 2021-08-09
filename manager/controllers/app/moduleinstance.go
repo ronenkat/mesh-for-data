@@ -7,17 +7,17 @@ import (
 	"strings"
 
 	"emperror.dev/errors"
+	app "fybrik.io/fybrik/manager/apis/app/v1alpha1"
+	modules "fybrik.io/fybrik/manager/controllers/app/modules"
+	"fybrik.io/fybrik/manager/controllers/utils"
+	connectors "fybrik.io/fybrik/pkg/connectors/clients"
+	pb "fybrik.io/fybrik/pkg/connectors/protobuf"
+	"fybrik.io/fybrik/pkg/multicluster"
+	local "fybrik.io/fybrik/pkg/multicluster/local"
+	"fybrik.io/fybrik/pkg/serde"
+	"fybrik.io/fybrik/pkg/storage"
+	vault "fybrik.io/fybrik/pkg/vault"
 	"github.com/go-logr/logr"
-	app "github.com/mesh-for-data/mesh-for-data/manager/apis/app/v1alpha1"
-	modules "github.com/mesh-for-data/mesh-for-data/manager/controllers/app/modules"
-	"github.com/mesh-for-data/mesh-for-data/manager/controllers/utils"
-	pb "github.com/mesh-for-data/mesh-for-data/pkg/connectors/protobuf"
-	"github.com/mesh-for-data/mesh-for-data/pkg/multicluster"
-	local "github.com/mesh-for-data/mesh-for-data/pkg/multicluster/local"
-	pc "github.com/mesh-for-data/mesh-for-data/pkg/policy-compiler/policy-compiler"
-	"github.com/mesh-for-data/mesh-for-data/pkg/serde"
-	"github.com/mesh-for-data/mesh-for-data/pkg/storage"
-	vault "github.com/mesh-for-data/mesh-for-data/pkg/vault"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -28,14 +28,14 @@ type NewAssetInfo struct {
 	Details *pb.DatasetDetails
 }
 
-// ModuleManager builds a set of modules based on the requirements (governance actions, data location) and the existing set of M4DModules
+// ModuleManager builds a set of modules based on the requirements (governance actions, data location) and the existing set of FybrikModules
 type ModuleManager struct {
 	Client             client.Client
 	Log                logr.Logger
-	Modules            map[string]*app.M4DModule
+	Modules            map[string]*app.FybrikModule
 	Clusters           []multicluster.Cluster
 	Owner              types.NamespacedName
-	PolicyCompiler     pc.IPolicyCompiler
+	PolicyManager      connectors.PolicyManager
 	WorkloadGeography  string
 	Provision          storage.ProvisionInterface
 	VaultConnection    vault.Interface
@@ -49,7 +49,7 @@ Future (ingest & write) order of the lookup to support ingest is:
 - If no label selector assume ingest of external data (what about archive in future?)
 	- run Copy module close to destination (determined based on governance decisions)
 	- and register new data set in data catalog
-- If Data Context Flow=Write
+- If Data Context Capability=Write
    - Write is always required, and always close to compute
    - Implicit Copy is used on demand, e.g. if a write module does not support the existing source of data or governance actions
    - Transformations are always done at workload location
@@ -124,7 +124,7 @@ func (m *ModuleManager) GetCopyDestination(item modules.DataInfo, destinationInt
 	}, nil
 }
 
-func (m *ModuleManager) selectReadModule(item modules.DataInfo, appContext *app.M4DApplication) (*modules.Selector, error) {
+func (m *ModuleManager) selectReadModule(item modules.DataInfo, appContext *app.FybrikApplication) (*modules.Selector, error) {
 	// read module is required if the workload exists
 	if appContext.Spec.Selector.WorkloadSelector.Size() == 0 {
 		return nil, nil
@@ -134,18 +134,18 @@ func (m *ModuleManager) selectReadModule(item modules.DataInfo, appContext *app.
 	// Read policies for data that is processed in the workload geography
 	var readActions []*pb.EnforcementAction
 	var err error
-	readActions, err = LookupPolicyDecisions(item.Context.DataSetID, m.PolicyCompiler, appContext,
+	readActions, err = LookupPolicyDecisions(item.Context.DataSetID, m.PolicyManager, appContext,
 		&pb.AccessOperation{Type: pb.AccessOperation_READ, Destination: m.WorkloadGeography})
 	if err != nil {
 		return nil, err
 	}
 	// select a read module that supports user interface requirements
 	// actions are not checked since they are not necessarily done by the read module
-	readSelector := &modules.Selector{Flow: app.Read,
+	readSelector := &modules.Selector{Capability: app.Read,
 		Destination:  &item.Context.Requirements.Interface,
 		Actions:      []*pb.EnforcementAction{},
 		Source:       nil,
-		Dependencies: []*app.M4DModule{},
+		Dependencies: []*app.FybrikModule{},
 		Module:       nil,
 		Message:      "",
 		Geo:          m.WorkloadGeography,
@@ -158,7 +158,7 @@ func (m *ModuleManager) selectReadModule(item modules.DataInfo, appContext *app.
 	return readSelector, nil
 }
 
-func (m *ModuleManager) selectCopyModule(item modules.DataInfo, appContext *app.M4DApplication, readSelector *modules.Selector) (*modules.Selector, error) {
+func (m *ModuleManager) selectCopyModule(item modules.DataInfo, appContext *app.FybrikApplication, readSelector *modules.Selector) (*modules.Selector, error) {
 	// logic for deciding whether copy module is required
 	var interfaces []*app.InterfaceDetails
 	var copyRequired bool
@@ -188,11 +188,11 @@ func (m *ModuleManager) selectCopyModule(item modules.DataInfo, appContext *app.
 	// select a module that supports COPY, supports required governance actions, has the required dependencies, with source in module sources and a non-empty intersection between requested and supported interfaces.
 	for _, copyDest := range interfaces {
 		copySelector = &modules.Selector{
-			Flow:         app.Copy,
+			Capability:   app.Copy,
 			Source:       &item.DataDetails.Interface,
 			Actions:      actionsOnCopy,
 			Destination:  copyDest,
-			Dependencies: make([]*app.M4DModule, 0),
+			Dependencies: make([]*app.FybrikModule, 0),
 			Module:       nil,
 			Geo:          geo,
 			Message:      ""}
@@ -213,7 +213,7 @@ func (m *ModuleManager) selectCopyModule(item modules.DataInfo, appContext *app.
 
 // SelectModuleInstances selects the necessary read/copy/write modules for the blueprint for a given data set
 // Write path is not yet implemented
-func (m *ModuleManager) SelectModuleInstances(item modules.DataInfo, appContext *app.M4DApplication) ([]modules.ModuleInstanceSpec, error) {
+func (m *ModuleManager) SelectModuleInstances(item modules.DataInfo, appContext *app.FybrikApplication) ([]modules.ModuleInstanceSpec, error) {
 	datasetID := item.Context.DataSetID
 	m.Log.Info("Select modules for " + datasetID)
 	instances := make([]modules.ModuleInstanceSpec, 0)
@@ -322,13 +322,17 @@ func (m *ModuleManager) SelectModuleInstances(item modules.DataInfo, appContext 
 }
 
 // GetSupportedReadSources returns a list of supported READ interfaces of a module
-func GetSupportedReadSources(module *app.M4DModule) []*app.InterfaceDetails {
+func GetSupportedReadSources(module *app.FybrikModule) []*app.InterfaceDetails {
 	var list []*app.InterfaceDetails
-	for _, inter := range module.Spec.Capabilities.SupportedInterfaces {
-		if inter.Flow != app.Read {
-			continue
+
+	// Check if the module supports READ
+	if hasCapability, caps := utils.GetModuleCapabilities(module, app.Read); hasCapability {
+		for _, cap := range caps {
+			// Collect the interface sources
+			for _, inter := range cap.SupportedInterfaces {
+				list = append(list, inter.Source)
+			}
 		}
-		list = append(list, inter.Source)
 	}
 	return list
 }
@@ -389,12 +393,12 @@ func (m *ModuleManager) getCopyRequirements(item modules.DataInfo, readSelector 
 	return copyRequired, sources, readActionsOnCopy
 }
 
-func (m *ModuleManager) enforceWritePolicies(appContext *app.M4DApplication, datasetID string) ([]*pb.EnforcementAction, string, error) {
+func (m *ModuleManager) enforceWritePolicies(appContext *app.FybrikApplication, datasetID string) ([]*pb.EnforcementAction, string, error) {
 	var err error
 	actions := []*pb.EnforcementAction{}
 	//	if the cluster selector is non-empty, the write will be done to the specified geography if possible
 	if m.WorkloadGeography != "" {
-		if actions, err = LookupPolicyDecisions(datasetID, m.PolicyCompiler, appContext,
+		if actions, err = LookupPolicyDecisions(datasetID, m.PolicyManager, appContext,
 			&pb.AccessOperation{Type: pb.AccessOperation_WRITE, Destination: m.WorkloadGeography}); err == nil {
 			return actions, m.WorkloadGeography, nil
 		}
@@ -402,7 +406,7 @@ func (m *ModuleManager) enforceWritePolicies(appContext *app.M4DApplication, dat
 	var excludedGeos string
 	for _, cluster := range m.Clusters {
 		operation := &pb.AccessOperation{Type: pb.AccessOperation_WRITE, Destination: cluster.Metadata.Region}
-		if actions, err = LookupPolicyDecisions(datasetID, m.PolicyCompiler, appContext, operation); err == nil {
+		if actions, err = LookupPolicyDecisions(datasetID, m.PolicyManager, appContext, operation); err == nil {
 			return actions, cluster.Metadata.Region, nil
 		}
 		if err.Error() != app.WriteNotAllowed {
@@ -418,7 +422,7 @@ func (m *ModuleManager) enforceWritePolicies(appContext *app.M4DApplication, dat
 
 // GetProcessingGeography determines the geography of the workload cluster.
 // If no cluster has been specified for a workload, a local cluster is assumed.
-func (m *ModuleManager) GetProcessingGeography(applicationContext *app.M4DApplication) (string, error) {
+func (m *ModuleManager) GetProcessingGeography(applicationContext *app.FybrikApplication) (string, error) {
 	clusterName := applicationContext.Spec.Selector.ClusterName
 	if clusterName == "" {
 		if applicationContext.Spec.Selector.WorkloadSelector.Size() == 0 {

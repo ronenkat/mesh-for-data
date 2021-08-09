@@ -9,12 +9,12 @@ on:
         default: 'latest'
 
 env:
-  GO_VERSION: 1.13
+  GO_VERSION: 1.16
   JAVA_VERSION: 11
 
 jobs:
   build-and-publish:
-    if: github.repository != 'mesh-for-data/mesh-for-data'
+    if: github.repository != 'fybrik/fybrik'
     name: Build and publish images
     runs-on: ubuntu-latest
     env:

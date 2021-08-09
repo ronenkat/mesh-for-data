@@ -1,5 +1,6 @@
 include Makefile.env
 export DOCKER_TAGNAME ?= latest
+export KUBE_NAMESPACE ?= fybrik-system
 
 .PHONY: license
 license: $(TOOLBIN)/license_finder
@@ -9,10 +10,14 @@ license: $(TOOLBIN)/license_finder
 docker-mirror-read:
 	$(TOOLS_DIR)/docker_mirror.sh $(TOOLS_DIR)/docker_mirror.conf
 
-.PHONY: build
-build:
-	$(MAKE) -C pkg/policy-compiler build
-	$(MAKE) -C manager manager
+.PHONY: deploy
+deploy: export VALUES_FILE?=charts/fybrik/values.yaml
+deploy: $(TOOLBIN)/kubectl $(TOOLBIN)/helm
+	$(TOOLBIN)/kubectl create namespace $(KUBE_NAMESPACE) || true
+	$(TOOLBIN)/helm install fybrik-crd charts/fybrik-crd  \
+               --namespace $(KUBE_NAMESPACE) --wait --timeout 120s
+	$(TOOLBIN)/helm install fybrik charts/fybrik --values $(VALUES_FILE) \
+               --namespace $(KUBE_NAMESPACE) --wait --timeout 120s
 
 .PHONY: test
 test:
@@ -22,35 +27,29 @@ test:
 
 .PHONY: run-integration-tests
 run-integration-tests: export DOCKER_HOSTNAME?=localhost:5000
-run-integration-tests: export DOCKER_NAMESPACE?=m4d-system
-run-integration-tests: export VALUES_FILE=m4d/integration-tests.values.yaml
+run-integration-tests: export DOCKER_NAMESPACE?=fybrik-system
+run-integration-tests: export VALUES_FILE=charts/fybrik/integration-tests.values.yaml
 run-integration-tests:
 	$(MAKE) kind
-	$(MAKE) -C charts vault
-	$(MAKE) -C charts wait-for-vault
-	$(MAKE) -C charts cert-manager
-	$(MAKE) -C third_party/datashim deploy
-	$(MAKE) docker
+	$(MAKE) cluster-prepare
+	$(MAKE) docker-build docker-push
 	$(MAKE) -C test/services docker-build docker-push
 	$(MAKE) cluster-prepare-wait
+	$(MAKE) deploy
 	$(MAKE) configure-vault
-	$(MAKE) -C charts m4d
-	$(MAKE) -C manager wait_for_manager
-	$(MAKE) helm
+	$(MAKE) -C modules helm
 	$(MAKE) -C modules helm-uninstall # Uninstalls the deployed tests from previous command
 	$(MAKE) -C pkg/helm test
 	$(MAKE) -C manager run-integration-tests
 	$(MAKE) -C modules test
 
 .PHONY: run-deploy-tests
-run-deploy-tests: export KUBE_NAMESPACE?=m4d-system
 run-deploy-tests:
 	$(MAKE) kind
 	$(MAKE) cluster-prepare
 	kubectl config set-context --current --namespace=$(KUBE_NAMESPACE)
 	$(MAKE) -C third_party/opa deploy
 	kubectl apply -f ./manager/config/prod/deployment_configmap.yaml
-	kubectl create secret generic user-vault-unseal-keys --from-literal=vault-root=$(kubectl get secrets vault-unseal-keys -o jsonpath={.data.vault-root} | base64 --decode) 
 	$(MAKE) -C connectors deploy
 	kubectl get pod --all-namespaces
 	kubectl wait --for=condition=ready pod --all-namespaces --all --timeout=120s
@@ -58,17 +57,14 @@ run-deploy-tests:
 
 .PHONY: cluster-prepare
 cluster-prepare:
-	$(MAKE) -C charts cert-manager
-	$(MAKE) -C charts vault
-	$(MAKE) -C charts wait-for-vault
+	$(MAKE) -C third_party/cert-manager deploy
+	$(MAKE) -C third_party/vault deploy
 	$(MAKE) -C third_party/datashim deploy
 
 .PHONY: cluster-prepare-wait
 cluster-prepare-wait:
 	$(MAKE) -C third_party/datashim deploy-wait
-
-.PHONY: docker
-docker: docker-build docker-push
+	$(MAKE) -C third_party/vault deploy-wait
 
 # Build only the docker images needed for integration testing
 .PHONY: docker-minimal-it
@@ -89,12 +85,8 @@ docker-push:
 	$(MAKE) -C connectors docker-push
 	$(MAKE) -C test/dummy-mover docker-push
 
-.PHONY: helm
-helm:
-	$(MAKE) -C modules helm
-
 DOCKER_PUBLIC_HOSTNAME ?= ghcr.io
-DOCKER_PUBLIC_NAMESPACE ?= mesh-for-data
+DOCKER_PUBLIC_NAMESPACE ?= fybrik
 DOCKER_PUBLIC_TAGNAME ?= latest
 
 DOCKER_PUBLIC_NAMES := \

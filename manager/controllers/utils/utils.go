@@ -12,8 +12,8 @@ import (
 	"runtime"
 	"sort"
 
-	app "github.com/mesh-for-data/mesh-for-data/manager/apis/app/v1alpha1"
-	dc "github.com/mesh-for-data/mesh-for-data/pkg/connectors/protobuf"
+	app "fybrik.io/fybrik/manager/apis/app/v1alpha1"
+	dc "fybrik.io/fybrik/pkg/connectors/protobuf"
 )
 
 // GetProtocol returns the existing data protocol
@@ -42,15 +42,6 @@ func IsAction(actionName string) bool {
 // IsDenied returns true if the data access is denied
 func IsDenied(actionName string) bool {
 	return (actionName == "Deny") // TODO FIX THIS
-}
-
-// GetAttribute parses a JSON string and returns the required attribute value
-func GetAttribute(attribute string, jsonStr string) string {
-	obj := make(map[string]string)
-	if err := json.Unmarshal([]byte(jsonStr), &obj); err != nil {
-		return ""
-	}
-	return obj[attribute]
 }
 
 // StructToMap converts a struct to a map using JSON marshal
@@ -165,12 +156,17 @@ func SupportsInterface(array []*app.InterfaceDetails, element *app.InterfaceDeta
 	return false
 }
 
-// SupportsFlow checks whether the given flow element can be found inside the array of flows
-func SupportsFlow(array []app.ModuleFlow, element app.ModuleFlow) bool {
-	for _, flow := range array {
-		if flow == element {
-			return true
+// GetModuleCapabilities checks if the requested capability is supported by the module.  If so it returns
+// the ModuleCapability structure.  There could be more than one, since multiple structures could exist with
+// the same CapabilityType but different protocols, dataformats and/or actions.
+func GetModuleCapabilities(module *app.FybrikModule, requestedCapability app.CapabilityType) (bool, []app.ModuleCapability) {
+	capList := []app.ModuleCapability{}
+	capFound := false
+	for _, cap := range module.Spec.Capabilities {
+		if cap.Capability == requestedCapability {
+			capList = append(capList, cap)
+			capFound = true
 		}
 	}
-	return false
+	return capFound, capList
 }

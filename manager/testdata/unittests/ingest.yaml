@@ -1,5 +1,5 @@
-apiVersion: app.m4d.ibm.com/v1alpha1
-kind: M4DApplication
+apiVersion: app.fybrik.io/v1alpha1
+kind: FybrikApplication
 metadata:
   name: ingest
   namespace: default
@@ -11,7 +11,7 @@ spec:
     purpose: Ingest
     role: Data Owner
   data:
-    - dataSetID: '{"asset_id": "xxx", "catalog_id": "s3-external"}'
+    - dataSetID: s3-external/xxx
       requirements:
         copy:
           required: true
